@@ -18,6 +18,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     strategy:
+      fail-fast: false
       matrix:
 
         os:
@@ -50,4 +51,4 @@ jobs:
       - name: Smoke test
         env:
           DEMO_SECRET: ${{ secrets.DEMO_SECRET }}
-        run: python scripts/smoke_test.py`f0`f0`f0`f0af0af0af0af0af0
+        run: python scripts/smoke_test.py
