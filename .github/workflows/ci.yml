@@ -157,3 +157,158 @@ jobs:
           name: simpleapp-release
           path: release/
           retention-days: 7
+
+
+  # ==========================================================
+  # JOB 4 - DEPLOY EN MI UBUNTU
+  # ==========================================================
+
+  deploy:
+
+    name: Deploy en gabomurdevops
+
+    needs: package
+
+    # Este job ya NO corre en una maquina de GitHub.
+    # Corre en nuestra propia VM Ubuntu.
+    runs-on: self-hosted
+
+    # Solo desplegar cuando hacemos push a main.
+    # Los Pull Requests NO despliegan.
+    if: >
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main'
+
+    steps:
+
+      # ------------------------------------------------------
+      # Descargar EXACTAMENTE el artifact creado por package
+      # ------------------------------------------------------
+
+      - name: Descargar artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: simpleapp-release
+          path: release
+
+
+      # ------------------------------------------------------
+      # Mostrar lo que descargamos
+      # ------------------------------------------------------
+
+      - name: Ver artifact descargado
+        run: |
+          echo "=== Artifact descargado ==="
+          ls -lh release/
+
+
+      # ------------------------------------------------------
+      # Copiar el release a una carpeta permanente
+      # de nuestra Ubuntu
+      # ------------------------------------------------------
+
+      - name: Preparar aplicacion
+        run: |
+          mkdir -p "$HOME/apps/github-actions-simple"
+
+          cp release/simpleapp.pyz \
+             "$HOME/apps/github-actions-simple/"
+
+          cp release/requirements.txt \
+             "$HOME/apps/github-actions-simple/"
+
+
+      # ------------------------------------------------------
+      # Crear el entorno Python e instalar dependencias
+      # ------------------------------------------------------
+
+      - name: Preparar entorno Python
+        run: |
+          cd "$HOME/apps/github-actions-simple"
+
+          if [ ! -d venv ]; then
+            python3 -m venv venv
+          fi
+
+          ./venv/bin/python -m pip install --upgrade pip
+
+          ./venv/bin/python -m pip install \
+            -r requirements.txt
+
+
+      # ------------------------------------------------------
+      # Detener una version anterior si existe
+      # ------------------------------------------------------
+
+      - name: Detener version anterior
+        run: |
+          cd "$HOME/apps/github-actions-simple"
+
+          if [ -f app.pid ]; then
+
+            OLD_PID=$(cat app.pid)
+
+            if kill -0 "$OLD_PID" 2>/dev/null; then
+              echo "Deteniendo PID $OLD_PID"
+              kill "$OLD_PID"
+              sleep 2
+            fi
+
+            rm -f app.pid
+
+          fi
+
+
+      # ------------------------------------------------------
+      # Arrancar el artifact que CI construyo
+      # ------------------------------------------------------
+
+      - name: Iniciar nueva version
+        env:
+          DEMO_SECRET: ${{ secrets.DEMO_SECRET }}
+        run: |
+          cd "$HOME/apps/github-actions-simple"
+
+          # Evita que GitHub Actions mate el proceso
+          # al terminar el job.
+          unset RUNNER_TRACKING_ID
+
+          DEMO_SECRET="$DEMO_SECRET" \
+          nohup ./venv/bin/python simpleapp.pyz \
+            > app.log 2>&1 &
+
+          echo $! > app.pid
+
+          echo "Aplicacion iniciada con PID:"
+          cat app.pid
+
+
+      # ------------------------------------------------------
+      # Health check
+      # ------------------------------------------------------
+
+      - name: Verificar deploy
+        run: |
+          echo "Esperando que la aplicacion responda..."
+
+          for i in $(seq 1 30); do
+
+            if curl -fsS \
+              http://127.0.0.1:8000/health; then
+
+              echo
+              echo "DEPLOY CORRECTO"
+              exit 0
+
+            fi
+
+            echo "Intento $i/30..."
+            sleep 1
+
+          done
+
+          echo "ERROR: la aplicacion no respondio"
+
+          cat "$HOME/apps/github-actions-simple/app.log"
+
+          exit 1
