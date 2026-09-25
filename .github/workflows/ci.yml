@@ -1,4 +1,4 @@
-name: CI Matrix Python
+name: CI Python con Matrix y SonarQube
 
 on:
   push:
@@ -9,7 +9,26 @@ on:
     branches:
       - main
 
+
+permissions:
+  contents: read
+
+
 jobs:
+
+  # ==========================================================
+  # JOB 1 - MATRIX
+  # Prueba la aplicacion en:
+  #
+  # Ubuntu  + Python 3.12
+  # Ubuntu  + Python 3.13
+  # Windows + Python 3.12
+  # Windows + Python 3.13
+  # macOS   + Python 3.12
+  # macOS   + Python 3.13
+  #
+  # Total: 6 jobs
+  # ==========================================================
 
   test:
 
@@ -19,6 +38,7 @@ jobs:
 
     strategy:
       fail-fast: false
+
       matrix:
 
         os:
@@ -30,25 +50,175 @@ jobs:
           - "3.12"
           - "3.13"
 
+
     steps:
+
+      # ------------------------------------------------------
+      # Descargar el repositorio
+      # ------------------------------------------------------
 
       - name: Checkout
         uses: actions/checkout@v7
 
+
+      # ------------------------------------------------------
+      # Instalar la version de Python indicada por la matrix
+      # ------------------------------------------------------
+
       - name: Configurar Python ${{ matrix.python }}
         uses: actions/setup-python@v7
+
         with:
           python-version: ${{ matrix.python }}
+
+          # Cache de dependencias pip
           cache: pip
+
           cache-dependency-path: requirements.txt
+
+
+      # ------------------------------------------------------
+      # Instalar Flask, pytest, pytest-cov, etc.
+      # ------------------------------------------------------
 
       - name: Instalar dependencias
         run: python -m pip install -r requirements.txt
 
+
+      # ------------------------------------------------------
+      # Ejecutar tests
+      # ------------------------------------------------------
+
+      - name: Ejecutar tests
+        run: python -m pytest -v
+
+
+      # ------------------------------------------------------
+      # Crear nuestro artefacto:
+      #
+      # dist/simpleapp.pyz
+      # ------------------------------------------------------
+
       - name: Construir aplicacion
         run: python scripts/build.py
 
+
+      # ------------------------------------------------------
+      # Arrancar la aplicacion
+      # comprobar /health
+      # apagarla
+      #
+      # DEMO_SECRET viene de GitHub Secrets
+      # ------------------------------------------------------
+
       - name: Smoke test
+
         env:
           DEMO_SECRET: ${{ secrets.DEMO_SECRET }}
+
         run: python scripts/smoke_test.py
+
+
+
+  # ==========================================================
+  # JOB 2 - SONARQUBE
+  #
+  # Este job NO empieza hasta que los 6 jobs anteriores
+  # hayan terminado correctamente.
+  # ==========================================================
+
+  sonar:
+
+    name: SonarQube
+
+    needs: test
+
+    runs-on: ubuntu-latest
+
+
+    steps:
+
+      # ------------------------------------------------------
+      # Checkout completo
+      #
+      # fetch-depth: 0 descarga todo el historial Git.
+      # Sonar puede usarlo para un mejor analisis.
+      # ------------------------------------------------------
+
+      - name: Checkout completo
+        uses: actions/checkout@v7
+
+        with:
+          fetch-depth: 0
+
+
+      # ------------------------------------------------------
+      # Para Sonar usamos una sola version de Python.
+      #
+      # No necesitamos volver a hacer matrix aqui.
+      # ------------------------------------------------------
+
+      - name: Configurar Python
+        uses: actions/setup-python@v7
+
+        with:
+          python-version: "3.13"
+
+          cache: pip
+
+          cache-dependency-path: requirements.txt
+
+
+      # ------------------------------------------------------
+      # Instalar dependencias
+      # ------------------------------------------------------
+
+      - name: Instalar dependencias
+        run: python -m pip install -r requirements.txt
+
+
+      # ------------------------------------------------------
+      # Ejecutar los tests OTRA VEZ,
+      # pero esta vez obteniendo cobertura.
+      #
+      # Se genera:
+      #
+      # coverage.xml
+      #
+      # SonarQube leera ese archivo.
+      # ------------------------------------------------------
+
+      - name: Ejecutar tests con cobertura
+
+        run: |
+          python -m pytest \
+            --cov=src \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml
+
+
+      # ------------------------------------------------------
+      # Verificar que coverage.xml realmente existe
+      # ------------------------------------------------------
+
+      - name: Verificar reporte de cobertura
+        run: ls -lh coverage.xml
+
+
+      # ------------------------------------------------------
+      # Mandar codigo + resultados a SonarQube Cloud
+      #
+      # SONAR_TOKEN viene de:
+      #
+      # GitHub
+      # Settings
+      # Secrets and variables
+      # Actions
+      # ------------------------------------------------------
+
+      - name: Analizar con SonarQube
+
+        uses: SonarSource/sonarqube-scan-action@v8
+
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
