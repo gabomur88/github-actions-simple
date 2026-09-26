@@ -1,0 +1,120 @@
+name: Build y Test Reutilizable Python
+
+# ============================================================
+# ESTE WORKFLOW NO ARRANCA SOLO.
+# Otro workflow debe llamarlo mediante "uses".
+# ============================================================
+
+on:
+  workflow_call:
+
+    # Parámetros que recibe la "plantilla"
+    inputs:
+
+      python-version:
+        description: "Version de Python que se utilizara"
+        required: true
+        type: string
+
+    # Secrets que el caller debe entregarle
+    secrets:
+
+      DEMO_SECRET:
+        required: true
+
+
+jobs:
+
+  build-test:
+
+    name: Build y Test Python ${{ inputs.python-version }}
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # ------------------------------------------------------
+      # 1. Descargar el repositorio
+      # ------------------------------------------------------
+
+      - name: Checkout
+        uses: actions/checkout@v6
+
+
+      # ------------------------------------------------------
+      # 2. Instalar la version de Python recibida
+      #    como parametro
+      # ------------------------------------------------------
+
+      - name: Configurar Python ${{ inputs.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+
+      # ------------------------------------------------------
+      # 3. Dependencias
+      # ------------------------------------------------------
+
+      - name: Instalar dependencias
+        run: python -m pip install -r requirements.txt
+
+
+      # ------------------------------------------------------
+      # 4. Tests
+      # ------------------------------------------------------
+
+      - name: Ejecutar tests
+        run: python -m pytest -v
+
+
+      # ------------------------------------------------------
+      # 5. Construir nuestro archivo desplegable
+      # ------------------------------------------------------
+
+      - name: Construir aplicacion
+        run: python scripts/build.py
+
+
+      # ------------------------------------------------------
+      # 6. Smoke test
+      # Aquí también practicamos paso de Secrets
+      # ------------------------------------------------------
+
+      - name: Smoke test
+        env:
+          DEMO_SECRET: ${{ secrets.DEMO_SECRET }}
+        run: python scripts/smoke_test.py
+
+
+      # ------------------------------------------------------
+      # 7. Preparar el release
+      # ------------------------------------------------------
+
+      - name: Preparar artifact
+        run: |
+          mkdir -p release
+
+          cp dist/simpleapp.pyz release/
+          cp requirements.txt release/
+
+          echo "=== Contenido del release ==="
+          ls -lh release/
+
+
+      # ------------------------------------------------------
+      # 8. Guardarlo en GitHub
+      #
+      # IMPORTANTE:
+      # El runner ubuntu-latest desaparecera al terminar.
+      # Por eso subimos el archivo como artifact.
+      # ------------------------------------------------------
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: simpleapp-release
+          path: release/
+          retention-days: 7
