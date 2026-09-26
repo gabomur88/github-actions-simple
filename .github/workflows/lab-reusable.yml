@@ -1,128 +1,58 @@
-        with:
-          fetch-depth: 0
+name: Build y Test Reutilizable Python
 
-      - name: Configurar Python 3.13
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: "Version de Python que se utilizara"
+        required: true
+        type: string
+    secrets:
+      DEMO_SECRET:
+        required: true
+
+jobs:
+  build-test:
+    name: Build y Test Python ${{ inputs.python-version }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configurar Python ${{ inputs.python-version }}
         uses: actions/setup-python@v6
         with:
-          python-version: "3.13"
+          python-version: ${{ inputs.python-version }}
           cache: pip
           cache-dependency-path: requirements.txt
 
       - name: Instalar dependencias
         run: python -m pip install -r requirements.txt
 
-      - name: Ejecutar tests con cobertura
-        run: |
-          python -m pytest \
-            --cov=src \
-            --cov-report=term-missing \
-            --cov-report=xml:coverage.xml
+      - name: Ejecutar tests
+        run: python -m pytest -v
 
-      - name: Ejecutar SonarQube y esperar Quality Gate
-        uses: SonarSource/sonarqube-scan-action@v8
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        with:
-          args: >
-            -Dsonar.qualitygate.wait=true
-            -Dsonar.qualitygate.timeout=300
+      - name: Construir aplicacion
+        run: python scripts/build.py
 
-  # ==========================================================
-  # JOB 3 - DEPLOY EN SELF-HOSTED RUNNER
-  # ==========================================================
-  deploy:
-    name: Deploy reutilizable en gabomurdevops
-    needs:
-      - pruebas
-      - sonar
-
-    runs-on:
-      - self-hosted
-      - Linux
-      - X64
-
-    # Solo desplegar si este workflow fue lanzado desde main.
-    if: github.ref == 'refs/heads/main'
-
-    steps:
-      - name: Descargar artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: simpleapp-release
-          path: release
-
-      - name: Ver artifact descargado
-        run: |
-          echo "=== Artifact recibido ==="
-          ls -lh release/
-
-      - name: Preparar aplicacion
-        run: |
-          APP_DIR="$HOME/apps/github-actions-simple"
-
-          mkdir -p "$APP_DIR"
-
-          cp release/simpleapp.pyz "$APP_DIR/"
-          cp release/requirements.txt "$APP_DIR/"
-
-      - name: Preparar entorno Python
-        run: |
-          APP_DIR="$HOME/apps/github-actions-simple"
-          cd "$APP_DIR"
-
-          if [ ! -d venv ]; then
-            python3 -m venv venv
-          fi
-
-          ./venv/bin/python -m pip install --upgrade pip
-          ./venv/bin/python -m pip install -r requirements.txt
-
-      - name: Detener version anterior
-        run: |
-          APP_DIR="$HOME/apps/github-actions-simple"
-          cd "$APP_DIR"
-
-          if [ -f app.pid ]; then
-            OLD_PID=$(cat app.pid)
-
-            if kill -0 "$OLD_PID" 2>/dev/null; then
-              echo "Deteniendo PID $OLD_PID"
-              kill "$OLD_PID"
-              sleep 2
-            fi
-
-            rm -f app.pid
-          fi
-
-      - name: Iniciar nueva version
+      - name: Smoke test
         env:
           DEMO_SECRET: ${{ secrets.DEMO_SECRET }}
+        run: python scripts/smoke_test.py
+
+      - name: Preparar artifact
         run: |
-          APP_DIR="$HOME/apps/github-actions-simple"
-          cd "$APP_DIR"
+          rm -rf release
+          mkdir -p release
+          cp dist/simpleapp.pyz release/
+          cp requirements.txt release/
+          echo "=== Contenido del release ==="
+          ls -lh release/
 
-          # Evita que el runner mate el proceso al terminar el job.
-          unset RUNNER_TRACKING_ID
-
-          DEMO_SECRET="$DEMO_SECRET" \
-          nohup ./venv/bin/python simpleapp.pyz \
-            > app.log 2>&1 &
-
-          echo $! > app.pid
-
-          echo "Aplicacion iniciada con PID:"
-          cat app.pid
-
-      - name: Health check final
-        run: |
-          echo "Esperando que la aplicacion responda..."
-
-          for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8000/health; then
-              echo
-              echo "DEPLOY CORRECTO"
-              exit 0
-            fi
-
-            echo "Intento $i/30"
-            sleep 1
+      - name: Subir artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: simpleapp-release
+          path: release/
+          retention-days: 7
