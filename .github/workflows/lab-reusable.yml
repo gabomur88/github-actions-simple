@@ -1,90 +1,24 @@
-name: LAB - Reusable Workflow + Artifact + Deploy
-
-# ============================================================
-# ESTE SI ES EL WORKFLOW PRINCIPAL.
-#
-# Este workflow SI arranca por un evento.
-# ============================================================
-
-on:
-
-  push:
-    branches:
-      - lab-reusable
-
-  workflow_dispatch:
-
-
-jobs:
-
-  # ==========================================================
-  # JOB 1
-  #
-  # NO contiene steps.
-  #
-  # En vez de escribir checkout, Python, tests, build, etc.,
-  # llama al reusable workflow.
-  # ==========================================================
-
-  pruebas:
-
-    uses: ./.github/workflows/reusable-build.yml
-
-    with:
-
-      # Le mandamos un INPUT a la plantilla.
-      python-version: "3.13"
-
-    secrets:
-
-      # Le entregamos explícitamente el secret requerido.
-      DEMO_SECRET: ${{ secrets.DEMO_SECRET }}
-
-
-  # ==========================================================
-  # JOB 2 - SONARQUBE
-  #
-  # Solo arranca si el reusable workflow termino correctamente.
-  # ==========================================================
-
-  sonar:
-
-    needs: pruebas
-
-    name: SonarQube y Quality Gate
-
-    runs-on: ubuntu-latest
-
-    steps:
-
-      - name: Checkout completo
-        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-
-      - name: Configurar Python
+      - name: Configurar Python 3.13
         uses: actions/setup-python@v6
         with:
           python-version: "3.13"
           cache: pip
           cache-dependency-path: requirements.txt
 
-
       - name: Instalar dependencias
         run: python -m pip install -r requirements.txt
 
-
-      # Sonar necesita nuestro coverage.xml
-      - name: Tests con cobertura
+      - name: Ejecutar tests con cobertura
         run: |
           python -m pytest \
             --cov=src \
             --cov-report=term-missing \
             --cov-report=xml:coverage.xml
 
-
-      - name: Ejecutar SonarQube
+      - name: Ejecutar SonarQube y esperar Quality Gate
         uses: SonarSource/sonarqube-scan-action@v8
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -93,17 +27,11 @@ jobs:
             -Dsonar.qualitygate.wait=true
             -Dsonar.qualitygate.timeout=300
 
-
   # ==========================================================
-  # JOB 3 - DEPLOY
-  #
-  # Este corre EN TU UBUNTU.
+  # JOB 3 - DEPLOY EN SELF-HOSTED RUNNER
   # ==========================================================
-
   deploy:
-
     name: Deploy reutilizable en gabomurdevops
-
     needs:
       - pruebas
       - sonar
@@ -113,40 +41,23 @@ jobs:
       - Linux
       - X64
 
-    # Para evitar deploy accidental desde otras ramas
-    if: github.ref == 'refs/heads/lab-reusable'
+    # Solo desplegar si este workflow fue lanzado desde main.
+    if: github.ref == 'refs/heads/main'
 
     steps:
-
-
-      # ------------------------------------------------------
-      # El artifact NO esta mágicamente en esta maquina.
-      #
-      # Fue construido en OTRO runner.
-      #
-      # Tenemos que descargarlo.
-      # ------------------------------------------------------
-
       - name: Descargar artifact
         uses: actions/download-artifact@v4
         with:
           name: simpleapp-release
           path: release
 
-
       - name: Ver artifact descargado
         run: |
           echo "=== Artifact recibido ==="
           ls -lh release/
 
-
-      # ------------------------------------------------------
-      # Preparar directorio permanente
-      # ------------------------------------------------------
-
       - name: Preparar aplicacion
         run: |
-
           APP_DIR="$HOME/apps/github-actions-simple"
 
           mkdir -p "$APP_DIR"
@@ -154,69 +65,43 @@ jobs:
           cp release/simpleapp.pyz "$APP_DIR/"
           cp release/requirements.txt "$APP_DIR/"
 
-
-      # ------------------------------------------------------
-      # Preparar Python
-      # ------------------------------------------------------
-
-      - name: Preparar entorno
+      - name: Preparar entorno Python
         run: |
-
           APP_DIR="$HOME/apps/github-actions-simple"
-
           cd "$APP_DIR"
 
           if [ ! -d venv ]; then
             python3 -m venv venv
           fi
 
-          ./venv/bin/python -m pip install \
-            -r requirements.txt
-
-
-      # ------------------------------------------------------
-      # Detener la version anterior
-      # ------------------------------------------------------
+          ./venv/bin/python -m pip install --upgrade pip
+          ./venv/bin/python -m pip install -r requirements.txt
 
       - name: Detener version anterior
         run: |
-
           APP_DIR="$HOME/apps/github-actions-simple"
-
           cd "$APP_DIR"
 
           if [ -f app.pid ]; then
-
             OLD_PID=$(cat app.pid)
 
             if kill -0 "$OLD_PID" 2>/dev/null; then
-
               echo "Deteniendo PID $OLD_PID"
-
               kill "$OLD_PID"
-
               sleep 2
-
             fi
 
             rm -f app.pid
-
           fi
 
-
-      # ------------------------------------------------------
-      # Ejecutar EXACTAMENTE el artifact descargado
-      # ------------------------------------------------------
-
-      - name: Iniciar aplicacion
+      - name: Iniciar nueva version
         env:
           DEMO_SECRET: ${{ secrets.DEMO_SECRET }}
         run: |
-
           APP_DIR="$HOME/apps/github-actions-simple"
-
           cd "$APP_DIR"
 
+          # Evita que el runner mate el proceso al terminar el job.
           unset RUNNER_TRACKING_ID
 
           DEMO_SECRET="$DEMO_SECRET" \
@@ -228,35 +113,16 @@ jobs:
           echo "Aplicacion iniciada con PID:"
           cat app.pid
 
-
-      # ------------------------------------------------------
-      # Verificacion final
-      # ------------------------------------------------------
-
-      - name: Health check
+      - name: Health check final
         run: |
-
-          echo "Esperando aplicacion..."
+          echo "Esperando que la aplicacion responda..."
 
           for i in $(seq 1 30); do
-
-            if curl -fsS \
-              http://127.0.0.1:8000/health; then
-
+            if curl -fsS http://127.0.0.1:8000/health; then
               echo
               echo "DEPLOY CORRECTO"
               exit 0
-
             fi
 
             echo "Intento $i/30"
-
             sleep 1
-
-          done
-
-          echo "ERROR: la aplicacion no respondio"
-
-          cat "$HOME/apps/github-actions-simple/app.log"
-
-          exit 1
